@@ -1684,48 +1684,313 @@ git commit -m "feat: add main entry point with game loop, resize handling, and s
 
 ---
 
-### Task 9: Integration Testing + Polish
+### Task 9: Playwright Visual Validation Setup
+
+**Files:**
+- Create: `playwright.config.js`
+- Create: `tests/visual/smoke.spec.js`
+
+**Step 1: Install Playwright**
+
+```bash
+npm init -y
+npm install -D @playwright/test
+npx playwright install chromium
+```
+
+**Step 2: Create Playwright config**
+
+`playwright.config.js`:
+
+```js
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  testDir: './tests/visual',
+  timeout: 30000,
+  use: {
+    baseURL: 'http://localhost:3000',
+    screenshot: 'on',
+  },
+  webServer: {
+    command: 'npx serve . -l 3000',
+    port: 3000,
+    reuseExistingServer: true,
+  },
+  reporter: [['list'], ['html', { open: 'never' }]],
+});
+```
+
+**Step 3: Write visual smoke tests**
+
+`tests/visual/smoke.spec.js`:
+
+```js
+import { test, expect } from '@playwright/test';
+
+// Helper: programmatically place elements on the grid via the simulation
+async function placeElement(page, elementName) {
+  // Click the swatch with matching title
+  await page.click(`.swatch[title="${elementName}"]`);
+}
+
+async function drawOnCanvas(page, x, y, duration = 100) {
+  const canvas = page.locator('#sim-canvas');
+  const box = await canvas.boundingBox();
+  await page.mouse.move(box.x + x, box.y + y);
+  await page.mouse.down();
+  await page.waitForTimeout(duration);
+  await page.mouse.up();
+}
+
+async function drawLine(page, x1, y1, x2, y2) {
+  const canvas = page.locator('#sim-canvas');
+  const box = await canvas.boundingBox();
+  await page.mouse.move(box.x + x1, box.y + y1);
+  await page.mouse.down();
+  await page.mouse.move(box.x + x2, box.y + y2, { steps: 10 });
+  await page.mouse.up();
+}
+
+test.describe('Powder Sim Visual Tests', () => {
+
+  test('app loads with dark UI and sidebar', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForTimeout(500);
+
+    // Sidebar should be visible on desktop
+    const sidebar = page.locator('#sidebar');
+    await expect(sidebar).toBeVisible();
+
+    // Canvas should be present
+    const canvas = page.locator('#sim-canvas');
+    await expect(canvas).toBeVisible();
+
+    // Element palette should have swatches
+    const swatches = page.locator('#element-palette .swatch');
+    expect(await swatches.count()).toBeGreaterThan(10);
+
+    await page.screenshot({ path: 'tests/visual/screenshots/01-initial-load.png' });
+  });
+
+  test('sand falls and piles up', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForTimeout(500);
+
+    // Select sand
+    await placeElement(page, 'Sand');
+
+    // Draw sand near the top
+    await drawLine(page, 200, 50, 400, 50);
+    await page.waitForTimeout(2000); // Let it fall
+
+    await page.screenshot({ path: 'tests/visual/screenshots/02-sand-falling.png' });
+
+    // Verify canvas is not all black (sand should be visible)
+    const canvas = page.locator('#sim-canvas');
+    const pixels = await canvas.evaluate((c) => {
+      const ctx = c.getContext('2d');
+      const data = ctx.getImageData(0, 0, c.width, c.height).data;
+      let nonBlack = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i] > 10 || data[i+1] > 10 || data[i+2] > 10) nonBlack++;
+      }
+      return nonBlack;
+    });
+    expect(pixels).toBeGreaterThan(0);
+  });
+
+  test('water flows and levels', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForTimeout(500);
+
+    // Place stone walls as a container
+    await placeElement(page, 'Stone');
+    await drawLine(page, 100, 300, 100, 400); // Left wall
+    await drawLine(page, 100, 400, 300, 400); // Floor
+    await drawLine(page, 300, 300, 300, 400); // Right wall
+
+    // Pour water
+    await placeElement(page, 'Water');
+    await drawOnCanvas(page, 200, 320, 1500);
+
+    await page.waitForTimeout(2000); // Let it settle
+
+    await page.screenshot({ path: 'tests/visual/screenshots/03-water-pool.png' });
+  });
+
+  test('fire burns wood', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForTimeout(500);
+
+    // Place a block of wood
+    await placeElement(page, 'Wood');
+    await drawLine(page, 150, 300, 350, 300);
+    await drawLine(page, 150, 310, 350, 310);
+    await drawLine(page, 150, 320, 350, 320);
+
+    // Set it on fire
+    await placeElement(page, 'Fire');
+    await drawOnCanvas(page, 250, 300, 200);
+
+    await page.waitForTimeout(3000); // Watch it burn
+
+    await page.screenshot({ path: 'tests/visual/screenshots/04-fire-burning-wood.png' });
+  });
+
+  test('lava meets water creates stone and steam', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForTimeout(500);
+
+    // Place water on the left
+    await placeElement(page, 'Water');
+    await drawOnCanvas(page, 200, 200, 1000);
+    await page.waitForTimeout(1000);
+
+    // Place lava nearby
+    await placeElement(page, 'Lava');
+    await drawOnCanvas(page, 220, 200, 500);
+    await page.waitForTimeout(2000);
+
+    await page.screenshot({ path: 'tests/visual/screenshots/05-lava-water-reaction.png' });
+  });
+
+  test('oil floats on water', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForTimeout(500);
+
+    // Container
+    await placeElement(page, 'Stone');
+    await drawLine(page, 150, 350, 150, 400);
+    await drawLine(page, 150, 400, 350, 400);
+    await drawLine(page, 350, 350, 350, 400);
+
+    // Pour water first
+    await placeElement(page, 'Water');
+    await drawOnCanvas(page, 250, 370, 1000);
+    await page.waitForTimeout(1000);
+
+    // Pour oil on top
+    await placeElement(page, 'Oil');
+    await drawOnCanvas(page, 250, 360, 500);
+    await page.waitForTimeout(2000);
+
+    await page.screenshot({ path: 'tests/visual/screenshots/06-oil-floats-on-water.png' });
+  });
+
+  test('mobile layout shows bottom bar', async ({ page }) => {
+    // Set mobile viewport
+    await page.setViewportSize({ width: 375, height: 667 });
+    await page.goto('/');
+    await page.waitForTimeout(500);
+
+    // Sidebar should be hidden
+    const sidebar = page.locator('#sidebar');
+    await expect(sidebar).not.toBeVisible();
+
+    // Mobile bar should be visible
+    const mobileBar = page.locator('#mobile-bar');
+    await expect(mobileBar).toBeVisible();
+
+    await page.screenshot({ path: 'tests/visual/screenshots/07-mobile-layout.png' });
+  });
+
+  test('mobile element picker opens and closes', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 });
+    await page.goto('/');
+    await page.waitForTimeout(500);
+
+    // Tap element swatch to open picker
+    await page.click('#mob-element');
+    await page.waitForTimeout(300);
+
+    const picker = page.locator('#mobile-picker');
+    await expect(picker).not.toHaveClass(/hidden/);
+
+    await page.screenshot({ path: 'tests/visual/screenshots/08-mobile-picker-open.png' });
+
+    // Select an element to close it
+    const firstSwatch = page.locator('#mobile-palette .swatch').first();
+    await firstSwatch.click();
+    await page.waitForTimeout(300);
+    await expect(picker).toHaveClass(/hidden/);
+  });
+
+  test('pause and clear controls work', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForTimeout(500);
+
+    // Place some sand
+    await placeElement(page, 'Sand');
+    await drawOnCanvas(page, 300, 100, 500);
+    await page.waitForTimeout(500);
+
+    // Pause
+    await page.click('#btn-pause');
+    const pauseBtn = page.locator('#btn-pause');
+    await expect(pauseBtn).toHaveText('Play');
+
+    await page.screenshot({ path: 'tests/visual/screenshots/09-paused.png' });
+
+    // Clear
+    await page.click('#btn-clear');
+    await page.waitForTimeout(200);
+
+    await page.screenshot({ path: 'tests/visual/screenshots/10-cleared.png' });
+  });
+});
+```
+
+**Step 4: Create screenshots directory**
+
+```bash
+mkdir -p tests/visual/screenshots
+echo "tests/visual/screenshots/" >> .gitignore
+```
+
+**Step 5: Run Playwright tests**
+
+Run: `npx playwright test`
+Expected: All pass. Screenshots saved to `tests/visual/screenshots/`.
+
+**Step 6: Review screenshots**
+
+Open `tests/visual/screenshots/` and visually inspect each one. The polecat should use the Read tool on the screenshot PNGs to verify:
+- 01: Dark UI, sidebar with element swatches, black canvas
+- 02: Sand particles visible, piled at bottom
+- 03: Water pooled inside stone container
+- 04: Fire visible, wood partially consumed
+- 05: Steam rising from lava/water contact, stone formed
+- 06: Oil layer sitting above water layer
+- 07: Mobile layout, bottom bar, no sidebar
+- 08: Mobile element picker expanded
+- 09: Simulation paused with particles frozen
+- 10: Canvas cleared to black
+
+**Step 7: Commit**
+
+```bash
+git add playwright.config.js tests/visual/smoke.spec.js .gitignore package.json package-lock.json
+git commit -m "feat: add Playwright visual tests for simulation and UI validation"
+```
+
+---
+
+### Task 10: Integration Polish
 
 **Step 1: Run all unit tests**
 
 Run: `node --test tests/`
 Expected: All pass.
 
-**Step 2: Manual visual testing**
+**Step 2: Run Playwright tests**
 
-Serve the project and test in browser:
-
-```bash
-npx serve .
-```
-
-**Visual test checklist:**
-- [ ] Sand falls and piles
-- [ ] Water flows and levels
-- [ ] Oil floats on water
-- [ ] Fire burns wood, spreads, dies
-- [ ] Gunpowder explodes near fire
-- [ ] Lava + water → stone + steam
-- [ ] Acid dissolves metal/stone/wood
-- [ ] Plant grows near water
-- [ ] Steam rises and condenses
-- [ ] Smoke rises and fades
-- [ ] Ice freezes nearby water
-- [ ] Salt + water → saltwater
-- [ ] Element selection works (desktop sidebar)
-- [ ] Brush size slider works
-- [ ] Speed 0.5x/1x/2x works
-- [ ] Pause/play works
-- [ ] Clear works
-- [ ] Mobile: bottom bar visible at ≤768px
-- [ ] Mobile: element picker expands/collapses
-- [ ] Mobile: S/M/L brush sizes work
-- [ ] Mobile: touch drawing works
-- [ ] Resize preserves simulation state
+Run: `npx playwright test`
+Expected: All pass. Review screenshots for visual correctness.
 
 **Step 3: Fix any issues found during testing**
 
-Address bugs, tune interaction probabilities, adjust colors as needed.
+Address bugs, tune interaction probabilities, adjust colors as needed. Re-run Playwright tests after each fix to verify screenshots look correct.
 
 **Step 4: Final commit**
 
@@ -1748,6 +2013,7 @@ git commit -m "feat: powder sim v1 — complete sandbox with 15 elements and res
 | 6 | HTML + CSS | `index.html`, `css/style.css` |
 | 7 | UI controller | `js/ui.js` |
 | 8 | Main game loop | `js/main.js` |
-| 9 | Integration + polish | All files |
+| 9 | Playwright visual tests | `playwright.config.js`, `tests/visual/smoke.spec.js` |
+| 10 | Integration + polish | All files |
 
-Total: 8 source files, 3 test files, ~1200 lines of code.
+Total: 8 source files, 3 unit test files, 1 visual test file, ~1400 lines of code.
